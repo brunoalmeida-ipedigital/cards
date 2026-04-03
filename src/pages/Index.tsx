@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { supabase } from "@/integrations/supabase/client";
 import AttendanceCard, { type Atendimento } from "@/components/AttendanceCard";
 
 // ── Config ────────────────────────────────────────────────────────
-const PIPE_ID = (import.meta.env?.VITE_PIPE_ID) || "823783";
-const PIPEFY_URL = "https://api.pipefy.com/graphql";
-const PIPEFY_TOKEN = (import.meta.env?.VITE_PIPEFY_TOKEN) || "";
+const PIPE_ID = "823783";
 const POLL_MS = 60000;
 const DONE_PHASES = new Set(["Finalizado", "Arquivado", "Concluido", "Concluído", "Finalizado em", "FINALIZADO EM"]);
 
@@ -21,20 +20,25 @@ const CHEX: Record<string, string> = {
 
 const LIM = 4 * 3600000;
 const AV20 = 20 * 60000;
-const AV10 = 10 * 60000;
 const AV05 = 5 * 60000;
 
-// ── Pipefy GraphQL helper ──
-const pipefy = async (query: string, variables: Record<string, unknown> = {}) => {
-  const r = await fetch(PIPEFY_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${PIPEFY_TOKEN}` },
-    body: JSON.stringify({ query, variables }),
+// ── Pipefy via Edge Function ──
+const pipefyQuery = async (query: string, variables: Record<string, unknown> = {}) => {
+  const { data, error } = await supabase.functions.invoke("pipefy-proxy", {
+    body: { query, variables },
   });
-  if (!r.ok) throw new Error(`Pipefy HTTP ${r.status}`);
-  const j = await r.json();
-  if (j.errors?.length) throw new Error(j.errors[0].message);
-  return j.data;
+  if (error) throw new Error(`Pipefy proxy error: ${error.message}`);
+  if (data?.errors?.length) throw new Error(data.errors[0].message);
+  return data?.data || data;
+};
+
+// ── Slack via Edge Function ──
+const slackNotify = async (payload: Record<string, unknown>) => {
+  try {
+    await supabase.functions.invoke("slack-notify", { body: payload });
+  } catch (e) {
+    console.warn("Slack notify failed:", e);
+  }
 };
 
 // ── Field helpers ──
@@ -123,6 +127,7 @@ export default function Index() {
   const [phaseIds, setPhaseIds] = useState<Record<string, string>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const seenCards = useRef(new Set<string>());
+  const slackSent = useRef(new Set<string>()); // track slack notifications sent
 
   const [busca, setBusca] = useState("");
   const [fClas, setFClas] = useState("");
@@ -163,7 +168,7 @@ export default function Index() {
   // ── Sync with Pipefy ──
   const fetchData = useCallback(async (silent = false) => {
     try {
-      const resp = await pipefy(PIPE_QUERY, { id: PIPE_ID });
+      const resp = await pipefyQuery(PIPE_QUERY, { id: PIPE_ID });
       if (!resp?.pipe) throw new Error("Resposta inválida do Pipefy");
       const pipe = resp.pipe;
       const flat: Atendimento[] = [];
@@ -181,7 +186,7 @@ export default function Index() {
           if (foundClas) clas = foundClas;
           else if (!clas || !Object.keys(CHEX).includes(clas)) clas = "NFe";
           const dem = fieldVal(c, "Prioridade").toLowerCase().includes("alta") ? "Alta" : "Média";
-          let dtVal = c.createdAt;
+          const dtVal = c.createdAt;
           const fields = c.fields || [];
           const fHora = fields.find((f: any) => f.name?.toLowerCase().includes("primeiro contato"));
           const parsedDate = parseDate(dtVal) || parseDate(fHora?.datetime_value) || parseDate(fHora?.value) || new Date();
@@ -201,11 +206,13 @@ export default function Index() {
 
       setPhaseIds(pIds);
 
-      // Notify new cards
+      // Notify new cards + Slack
       flat.forEach(c => {
         const isAnSel = (c.etapa || "").toLowerCase().includes("analista selecionado");
         if (isAnSel && c.analista && !seenCards.current.has(c.id)) {
           seenCards.current.add(c.id);
+          // Send Slack notification for new assignment
+          slackNotify({ type: "novo_atendimento", analista: c.analista, cliente: c.cli, licenca: c.lic });
           const isMe = !fAnalista || c.analista === fAnalista;
           if (isMe) {
             setAlerta({ tipo: "aviso", titulo: "🎯 NOVO ATENDIMENTO!", cli: c.cli.toUpperCase(), msg: `LICENÇA: ${c.lic}\nNOVO CARD EM ANALISTA SELECIONADO.` });
@@ -250,7 +257,7 @@ export default function Index() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchData]);
 
-  // Alert worker
+  // Alert worker + Slack SLA alerts
   useEffect(() => {
     let alertToSet: any = null;
     setData(prev => {
@@ -264,9 +271,54 @@ export default function Index() {
         const isMe = !fAnalista || a.analista === fAnalista;
         const isAnSel = (a.etapa || "").toLowerCase().includes("analista selecionado");
         if (isAnSel) {
-          if (rest <= AV20 && rest > AV05 && !a.a20) { a.a20 = true; changed = true; if (isMe) alertToSet = { tipo: "urgente", titulo: "ATENÇÃO — PRAZO!", cli: a.cli.toUpperCase(), msg: `FALTAM ${Math.ceil(rest / 60000)} MINUTOS PARA O PRAZO DE 4H.` }; }
-          if (rest <= AV05 && rest > 0 && !a.a05) { a.a05 = true; changed = true; if (isMe) alertToSet = { tipo: "urgente", titulo: "PRAZO CRÍTICO!", cli: a.cli.toUpperCase(), msg: `APENAS ${Math.ceil(rest / 60000)} MINUTOS RESTANTES!` }; }
-          if (rest <= 0 && !a.a4h) { a.a4h = true; changed = true; if (isMe) alertToSet = { tipo: "urgente", titulo: "PRAZO VENCIDO!", cli: a.cli.toUpperCase(), msg: "PRAZO DE 4H VENCIDO! RESOLVA IMEDIATAMENTE." }; }
+          if (rest <= AV20 && rest > AV05 && !a.a20) {
+            a.a20 = true; changed = true;
+            // Slack alert: 20 min
+            const key = `20_${a.id}`;
+            if (!slackSent.current.has(key)) {
+              slackSent.current.add(key);
+              slackNotify({ type: "alerta_20min", analista: a.analista, cliente: a.cli, licenca: a.lic, minutos: Math.ceil(rest / 60000) });
+            }
+            if (isMe) alertToSet = { tipo: "urgente", titulo: "ATENÇÃO — PRAZO!", cli: a.cli.toUpperCase(), msg: `FALTAM ${Math.ceil(rest / 60000)} MINUTOS PARA O PRAZO DE 4H.` };
+          }
+          if (rest <= AV05 && rest > 0 && !a.a05) {
+            a.a05 = true; changed = true;
+            // Slack alert: 5 min
+            const key = `05_${a.id}`;
+            if (!slackSent.current.has(key)) {
+              slackSent.current.add(key);
+              slackNotify({ type: "alerta_5min", analista: a.analista, cliente: a.cli, licenca: a.lic, minutos: Math.ceil(rest / 60000) });
+            }
+            if (isMe) alertToSet = { tipo: "urgente", titulo: "PRAZO CRÍTICO!", cli: a.cli.toUpperCase(), msg: `APENAS ${Math.ceil(rest / 60000)} MINUTOS RESTANTES!` };
+          }
+          if (rest <= 0 && !a.a4h) {
+            a.a4h = true; changed = true;
+            // Slack alert: expired
+            const key = `4h_${a.id}`;
+            if (!slackSent.current.has(key)) {
+              slackSent.current.add(key);
+              slackNotify({ type: "prazo_vencido", analista: a.analista, cliente: a.cli, licenca: a.lic });
+            }
+            if (isMe) alertToSet = { tipo: "urgente", titulo: "PRAZO VENCIDO!", cli: a.cli.toUpperCase(), msg: "PRAZO DE 4H VENCIDO! RESOLVA IMEDIATAMENTE." };
+          }
+        }
+
+        // Agendados: alert 5 min before
+        const isAgendado = (a.etapa || "").toLowerCase().includes("agendado");
+        if (isAgendado && a.horaContato && !a.aAgd) {
+          const agd = parseDate(a.horaContato);
+          if (agd) {
+            const diff = agd.getTime() - nowTs;
+            if (diff <= 5 * 60000 && diff > 0) {
+              a.aAgd = true; changed = true;
+              const key = `agd_${a.id}`;
+              if (!slackSent.current.has(key)) {
+                slackSent.current.add(key);
+                slackNotify({ type: "agendado_5min", analista: a.analista, cliente: a.cli, licenca: a.lic, horaAgendada: agd.toLocaleTimeString("pt-BR") });
+              }
+              if (isMe) alertToSet = { tipo: "urgente", titulo: "📅 AGENDAMENTO EM 5 MIN!", cli: a.cli.toUpperCase(), msg: `Horário agendado: ${agd.toLocaleTimeString("pt-BR")}` };
+            }
+          }
         }
       });
       if (changed) localStorage.setItem("cat_v4", JSON.stringify(n));
@@ -279,7 +331,7 @@ export default function Index() {
   const updateCard = async (id: string, changes: Partial<Atendimento>) => {
     setData(p => { const n = p.map(c => c.id === id ? { ...c, ...changes } : c); localStorage.setItem("cat_v4", JSON.stringify(n)); return n; });
     if (changes.etapa && phaseIds[changes.etapa]) {
-      try { await pipefy(`mutation { moveCardToPhase(input: { card_id: "${id}", destination_phase_id: "${phaseIds[changes.etapa]}" }) { card { id } } }`); } catch (e: any) { toast(`⚠ Erro: ${e.message}`); }
+      try { await pipefyQuery(`mutation { moveCardToPhase(input: { card_id: "${id}", destination_phase_id: "${phaseIds[changes.etapa]}" }) { card { id } } }`); } catch (e: any) { toast(`⚠ Erro: ${e.message}`); }
     }
   };
 
@@ -325,11 +377,12 @@ export default function Index() {
     const b = busca.toLowerCase();
     return data.filter(a => {
       if (!a) return false;
+      const isAgendado = (a.etapa || "").toLowerCase().includes("agendado");
       const mb = !b || a.cli.toLowerCase().includes(b) || a.lic.toLowerCase().includes(b);
       const mc = !fClas || a.clas === fClas;
       const md = !fDem || a.dem === fDem;
       const ma = !fAnalista || a.analista === fAnalista;
-      return mb && mc && md && ma && !a.encerrado;
+      return mb && mc && md && ma && !a.encerrado && !isAgendado;
     }).sort((a, b) => {
       const isA = (a.etapa || "").toLowerCase().includes("analista selecionado");
       const isB = (b.etapa || "").toLowerCase().includes("analista selecionado");
@@ -342,6 +395,20 @@ export default function Index() {
       return (a.abertoEm || 0) - (b.abertoEm || 0);
     });
   }, [data, busca, fClas, fDem, fAnalista]);
+
+  // Agendados section
+  const agendados = useMemo(() => {
+    return data.filter(a => {
+      if (!a || a.encerrado) return false;
+      const isAgendado = (a.etapa || "").toLowerCase().includes("agendado");
+      const ma = !fAnalista || a.analista === fAnalista;
+      return isAgendado && ma;
+    }).sort((a, b) => {
+      const da = parseDate(a.horaContato)?.getTime() || 0;
+      const db = parseDate(b.horaContato)?.getTime() || 0;
+      return da - db;
+    });
+  }, [data, fAnalista]);
 
   const memData = useMemo(() => fAnalista ? data.filter(a => a?.analista === fAnalista) : data, [data, fAnalista]);
   const abrt = memData.filter(a => a && !a.encerrado).length;
@@ -356,7 +423,7 @@ export default function Index() {
           <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-bold text-lg">🎯</div>
           <div>
             <h1 className="text-lg font-bold text-foreground tracking-tight">Central de Atendimentos</h1>
-            <p className="text-xs text-muted-foreground">Gestão de chamados em tempo real</p>
+            <p className="text-xs text-muted-foreground">Gestão de chamados em tempo real • Slack + Pipefy</p>
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -389,9 +456,9 @@ export default function Index() {
           <div className="text-[0.7rem] text-muted-foreground">Prioridade máxima</div>
         </div>
         <div className="bg-card rounded-xl p-4 border border-border">
-          <div className="text-[0.65rem] uppercase font-bold text-muted-foreground">A Vencer</div>
-          <div className="text-2xl font-extrabold text-vintage-yellow">{aVencer.length}</div>
-          <div className="text-[0.7rem] text-muted-foreground">Analista Selec.</div>
+          <div className="text-[0.65rem] uppercase font-bold text-muted-foreground">Agendados</div>
+          <div className="text-2xl font-extrabold text-vintage-yellow">{agendados.length}</div>
+          <div className="text-[0.7rem] text-muted-foreground">Clientes agendados</div>
         </div>
         <div className="bg-card rounded-xl p-4 border border-border">
           <div className="text-[0.65rem] uppercase font-bold text-accent mb-1">Próximos a Vencer ⌛</div>
@@ -428,7 +495,7 @@ export default function Index() {
         </select>
         <button onClick={limEnc} className="text-sm text-destructive bg-destructive/10 border border-transparent rounded-lg px-3 py-2 font-semibold hover:bg-destructive/20 transition-colors">🗑 Limpar enc.</button>
         <div className="ml-auto text-xs text-muted-foreground font-medium">
-          📋 {filtered.length} registro(s)
+          📋 {filtered.length} registro(s) {lastSync && `• Sync: ${lastSync.toLocaleTimeString("pt-BR")}`}
         </div>
       </div>
 
@@ -453,6 +520,33 @@ export default function Index() {
           ))
         )}
       </div>
+
+      {/* Agendados Section */}
+      {agendados.length > 0 && (
+        <div className="mb-8">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-lg">📅</span>
+            <h2 className="text-base font-bold text-foreground">Agendados</h2>
+            <span className="text-xs bg-vintage-yellow/20 text-vintage-yellow font-bold px-2 py-0.5 rounded-full">{agendados.length}</span>
+          </div>
+          <div className="space-y-1.5">
+            {agendados.map((a, i) => (
+              <AttendanceCard
+                key={a.id}
+                item={a}
+                index={i}
+                now={now}
+                onUpdateCard={updateCard}
+                onComment={(id, text) => setComent({ id, text })}
+                onEdit={item => setModEdit({ ...item })}
+                onCopyMsg={copyContactMsg}
+                onToggleTent={tent}
+                fAnalista={fAnalista}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* New attendance form */}
       <div className="bg-card border border-border rounded-xl p-5 mb-6">
