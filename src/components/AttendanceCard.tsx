@@ -103,7 +103,7 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
 
   return (
     <div
-      className={`rounded-lg border transition-all duration-200 cursor-pointer ${
+      className={`rounded-md border transition-all duration-200 cursor-pointer ${
         isZebra ? "bg-card-alt" : "bg-card"
       } ${a.encerrado ? "opacity-60" : ""} ${
         a.dem === "Alta" && !a.encerrado ? "border-l-[3px] border-l-destructive" : "border-border"
@@ -112,7 +112,7 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
     >
       {/* Compact header - always visible */}
       <div
-        className="flex items-center gap-3 px-4 py-3 select-none"
+        className="flex items-center gap-2 px-3 py-1.5 select-none"
         onClick={() => setExpanded(!expanded)}
       >
         {/* Demand indicator */}

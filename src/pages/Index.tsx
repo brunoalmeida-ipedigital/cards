@@ -496,7 +496,7 @@ export default function Index() {
       </div>
 
       {/* Attendance list */}
-      <div className="space-y-1.5 mb-8">
+      <div className="space-y-1 mb-8">
         {filtered.length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">Nenhum atendimento encontrado.</div>
         ) : (
