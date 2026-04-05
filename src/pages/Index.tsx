@@ -499,6 +499,22 @@ export default function Index() {
         </div>
       </div>
 
+      {/* Tabs */}
+      <div className="flex gap-1 mb-4 bg-muted rounded-lg p-1 w-fit">
+        <button
+          onClick={() => setActiveTab("list")}
+          className={`text-sm font-semibold px-4 py-1.5 rounded-md transition-colors ${activeTab === "list" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+        >📋 Atendimentos</button>
+        <button
+          onClick={() => setActiveTab("dashboard")}
+          className={`text-sm font-semibold px-4 py-1.5 rounded-md transition-colors ${activeTab === "dashboard" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+        >📊 Dashboard</button>
+      </div>
+
+      {activeTab === "dashboard" ? (
+        <Dashboard data={data} now={now} />
+      ) : (
+      <>
       {/* Filters */}
       <div className="flex flex-wrap gap-2 mb-4 items-center">
         <input
