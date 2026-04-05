@@ -130,12 +130,21 @@ export default function Index() {
   const [phaseIds, setPhaseIds] = useState<Record<string, string>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const seenCards = useRef(new Set<string>());
-  const slackSent = useRef(new Set<string>()); // track slack notifications sent
+  const slackSent = useRef(new Set<string>());
+  const [darkMode, setDarkMode] = useState(() => {
+    const saved = localStorage.getItem("cat_dark");
+    return saved === "true";
+  });
 
   const [busca, setBusca] = useState("");
   const [fClas, setFClas] = useState("");
   const [fDem, setFDem] = useState("");
   const [fAnalista, setFAnalista] = useState(() => localStorage.getItem("cat_fAnalista") || "BRUNO");
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    localStorage.setItem("cat_dark", String(darkMode));
+  }, [darkMode]);
 
   const [alerta, setAlerta] = useState<{ tipo: string; titulo: string; cli: string; msg: string } | null>(null);
   const [modEdit, setModEdit] = useState<Atendimento | null>(null);
@@ -195,14 +204,22 @@ export default function Index() {
           const parsedDate = parseDate(dtVal) || parseDate(fHora?.datetime_value) || parseDate(fHora?.value) || new Date();
           const openedAt = parsedDate.getTime();
 
+          // Parse agendamento date
+          const agendField = fields.find((f: any) => {
+            const n = (f.name || "").toLowerCase();
+            return n.includes("agendad") || n.includes("reagendad") || n.includes("data do agendamento") || n.includes("horário");
+          });
+          const agendadoEm = agendField?.datetime_value || agendField?.value || "";
+
           flat.push({
             id: c.id, lic, cli, cel: fieldVal(c, "Telefone Cliente", "telefone")?.replace("+55", "").trim() || "",
             clas, dem, stat: fieldVal(c, "Situação", "Status") || "Normal",
             etapa: c.current_phase?.name || "Caixa de entrada",
-            tentativas: [false, false, false], abertoEm: openedAt,
+            tentativas: [false, false, false, false, false, false, false, false], abertoEm: openedAt,
             encerrado: isEncerrado, encerradoEm: isEncerrado ? Date.now() : null,
             horaContato: fHora?.value || "", analista: (getAnalista(c) || "").toUpperCase(),
-            comentario: "", a20: false, a10: false, a4h: false, aAgd: false, a05: false, _original: c,
+            comentario: "", a20: false, a10: false, a4h: false, aAgd: false, a05: false,
+            agendadoEm, _original: c,
           });
         });
       });
@@ -229,8 +246,9 @@ export default function Index() {
         const merged = flat.map(sc => {
           const local = idMap.get(sc.id);
           if (local) {
-            const nt = Array.isArray(local.tentativas) ? [...local.tentativas] : [false, false, false];
-            return { ...sc, tentativas: nt, stat: local.stat || "Normal", a05: local.a05, a20: local.a20, a4h: local.a4h, aAgd: local.aAgd };
+            const nt = Array.isArray(local.tentativas) ? [...local.tentativas] : [false, false, false, false, false, false, false, false];
+            while (nt.length < 8) nt.push(false);
+            return { ...sc, tentativas: nt, stat: local.stat || "Normal", a05: local.a05, a20: local.a20, a4h: local.a4h, aAgd: local.aAgd, agendadoEm: sc.agendadoEm || local.agendadoEm };
           }
           return sc;
         });
@@ -249,7 +267,11 @@ export default function Index() {
     if (local) {
       try {
         const parsed = JSON.parse(local);
-        if (Array.isArray(parsed)) setData(parsed.filter(Boolean).map((c: any) => ({ ...c, tentativas: Array.isArray(c.tentativas) ? c.tentativas : [false, false, false] })));
+        if (Array.isArray(parsed)) setData(parsed.filter(Boolean).map((c: any) => {
+          const t = Array.isArray(c.tentativas) ? c.tentativas : [false, false, false, false, false, false, false, false];
+          while (t.length < 8) t.push(false);
+          return { ...c, tentativas: t };
+        }));
       } catch {}
     }
     fetchData(false);
@@ -351,7 +373,7 @@ export default function Index() {
     if (!novo.lic || !novo.cli) { toast("⚠ Preencha Licença e Cliente"); return; }
     const id = Date.now().toString();
     setData(p => {
-      const n: Atendimento[] = [{ id, ...novo, etapa: ETAPAS[0], tentativas: [false, false, false], abertoEm: Date.now(), encerrado: false, encerradoEm: null, horaContato: novo.horaContato, analista: fAnalista || "", comentario: "", a20: false, a10: false, a4h: false, aAgd: false, a05: false }, ...p];
+      const n: Atendimento[] = [{ id, ...novo, etapa: ETAPAS[0], tentativas: [false, false, false, false, false, false, false, false], abertoEm: Date.now(), encerrado: false, encerradoEm: null, horaContato: novo.horaContato, analista: fAnalista || "", comentario: "", a20: false, a10: false, a4h: false, aAgd: false, a05: false, agendadoEm: "" }, ...p];
       localStorage.setItem("cat_v4", JSON.stringify(n));
       return n;
     });
@@ -431,6 +453,9 @@ export default function Index() {
             <option value="">👤 Todos</option>
             {analistasList.map(an => <option key={an} value={an}>{an}</option>)}
           </select>
+          <button onClick={() => setDarkMode(!darkMode)} className="text-sm border border-border rounded-lg px-3 py-1.5 text-foreground hover:bg-muted transition-colors" title="Alternar tema">
+            {darkMode ? "☀️" : "🌙"}
+          </button>
           <button onClick={() => fetchData()} className="text-sm border border-border rounded-lg px-3 py-1.5 text-foreground hover:bg-muted transition-colors">↻ Sync</button>
           <div className="font-mono text-sm font-semibold text-primary bg-card border border-border rounded-lg px-3 py-1.5 flex items-center gap-2">
             {now.toLocaleTimeString("pt-BR")}

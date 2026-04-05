@@ -78,26 +78,70 @@
   }
 
   .dark {
-    --background: 30 10% 10%;
-    --foreground: 40 20% 90%;
-    --card: 30 10% 14%;
-    --card-foreground: 40 20% 90%;
-    --card-alt: 30 8% 17%;
-    --popover: 30 10% 12%;
-    --popover-foreground: 40 20% 90%;
-    --primary: 82 30% 50%;
-    --primary-foreground: 30 10% 10%;
-    --secondary: 30 10% 20%;
-    --secondary-foreground: 40 20% 90%;
-    --muted: 30 8% 20%;
-    --muted-foreground: 30 10% 60%;
-    --accent: 30 40% 50%;
-    --accent-foreground: 40 20% 95%;
+    /* Corporate blue/gold dark theme */
+    --background: 220 35% 12%;
+    --foreground: 216 20% 95%;
+
+    --card: 218 32% 17%;
+    --card-foreground: 216 20% 95%;
+    --card-alt: 218 28% 20%;
+
+    --popover: 218 32% 15%;
+    --popover-foreground: 216 20% 95%;
+
+    --primary: 33 40% 56%;
+    --primary-foreground: 220 35% 12%;
+
+    --secondary: 218 25% 25%;
+    --secondary-foreground: 216 20% 90%;
+
+    --muted: 218 20% 22%;
+    --muted-foreground: 216 15% 70%;
+
+    --accent: 33 45% 60%;
+    --accent-foreground: 220 35% 10%;
+
     --destructive: 0 55% 45%;
     --destructive-foreground: 0 0% 98%;
-    --border: 30 8% 22%;
-    --input: 30 8% 22%;
-    --ring: 82 30% 50%;
+
+    --border: 218 20% 25%;
+    --input: 218 20% 25%;
+    --ring: 33 40% 56%;
+
+    /* Custom dark tokens */
+    --olive: 33 40% 56%;
+    --olive-light: 33 45% 65%;
+    --cream: 216 20% 95%;
+    --beige: 218 15% 30%;
+    --brown: 33 30% 45%;
+    --brown-light: 33 25% 55%;
+    --warm-gray: 216 15% 70%;
+    --sand: 218 15% 28%;
+    --terracotta: 15 50% 50%;
+    --sage: 120 35% 45%;
+
+    --gold: 33 60% 56%;
+    --gold-hover: 33 65% 65%;
+    --green: 122 40% 45%;
+    --red: 0 60% 50%;
+    --yellow: 40 70% 55%;
+    --blue: 210 50% 55%;
+
+    --panel-bg: 218 28% 19%;
+    --panel-dark: 218 25% 16%;
+
+    --shadow-soft: 0 4px 20px hsl(0 0% 0% / 0.25);
+    --shadow-medium: 0 4px 20px hsl(0 0% 0% / 0.35);
+    --shadow-card: 0 2px 8px hsl(0 0% 0% / 0.2);
+
+    --sidebar-background: 218 32% 15%;
+    --sidebar-foreground: 216 20% 90%;
+    --sidebar-primary: 33 40% 56%;
+    --sidebar-primary-foreground: 220 35% 12%;
+    --sidebar-accent: 218 28% 20%;
+    --sidebar-accent-foreground: 216 20% 90%;
+    --sidebar-border: 218 20% 25%;
+    --sidebar-ring: 33 40% 56%;
   }
 }
 
@@ -144,6 +188,14 @@
 .badge-tef { background: hsl(140 40% 93%); color: hsl(140 40% 30%); border: 1px solid hsl(140 30% 75%); }
 .badge-imp { background: hsl(25 60% 93%); color: hsl(25 60% 38%); border: 1px solid hsl(25 50% 78%); }
 .badge-eti { background: hsl(40 60% 93%); color: hsl(40 60% 35%); border: 1px solid hsl(40 50% 78%); }
+
+.dark .badge-nfe { background: hsl(210 40% 20%); color: hsl(210 60% 70%); border-color: hsl(210 30% 30%); }
+.dark .badge-nfesc { background: hsl(270 30% 20%); color: hsl(270 50% 70%); border-color: hsl(270 25% 30%); }
+.dark .badge-bol { background: hsl(185 30% 18%); color: hsl(185 50% 65%); border-color: hsl(185 25% 28%); }
+.dark .badge-bolt { background: hsl(200 30% 18%); color: hsl(200 50% 65%); border-color: hsl(200 25% 28%); }
+.dark .badge-tef { background: hsl(140 25% 18%); color: hsl(140 40% 60%); border-color: hsl(140 20% 28%); }
+.dark .badge-imp { background: hsl(25 35% 20%); color: hsl(25 60% 65%); border-color: hsl(25 30% 30%); }
+.dark .badge-eti { background: hsl(40 35% 20%); color: hsl(40 60% 65%); border-color: hsl(40 30% 30%); }
 
 /* Toast */
 #toast-custom {
