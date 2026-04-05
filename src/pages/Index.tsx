@@ -453,6 +453,9 @@ export default function Index() {
             <option value="">👤 Todos</option>
             {analistasList.map(an => <option key={an} value={an}>{an}</option>)}
           </select>
+          <button onClick={() => setDarkMode(!darkMode)} className="text-sm border border-border rounded-lg px-3 py-1.5 text-foreground hover:bg-muted transition-colors" title="Alternar tema">
+            {darkMode ? "☀️" : "🌙"}
+          </button>
           <button onClick={() => fetchData()} className="text-sm border border-border rounded-lg px-3 py-1.5 text-foreground hover:bg-muted transition-colors">↻ Sync</button>
           <div className="font-mono text-sm font-semibold text-primary bg-card border border-border rounded-lg px-3 py-1.5 flex items-center gap-2">
             {now.toLocaleTimeString("pt-BR")}
