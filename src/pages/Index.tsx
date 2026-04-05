@@ -143,7 +143,6 @@ export default function Index() {
   const [fClas, setFClas] = useState("");
   const [fDem, setFDem] = useState("");
   const [fAnalista, setFAnalista] = useState(() => localStorage.getItem("cat_fAnalista") || "BRUNO");
-  const [fAnalista, setFAnalista] = useState(() => localStorage.getItem("cat_fAnalista") || "BRUNO");
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
