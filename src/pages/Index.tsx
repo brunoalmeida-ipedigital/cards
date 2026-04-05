@@ -246,8 +246,9 @@ export default function Index() {
         const merged = flat.map(sc => {
           const local = idMap.get(sc.id);
           if (local) {
-            const nt = Array.isArray(local.tentativas) ? [...local.tentativas] : [false, false, false];
-            return { ...sc, tentativas: nt, stat: local.stat || "Normal", a05: local.a05, a20: local.a20, a4h: local.a4h, aAgd: local.aAgd };
+            const nt = Array.isArray(local.tentativas) ? [...local.tentativas] : [false, false, false, false, false, false, false, false];
+            while (nt.length < 8) nt.push(false);
+            return { ...sc, tentativas: nt, stat: local.stat || "Normal", a05: local.a05, a20: local.a20, a4h: local.a4h, aAgd: local.aAgd, agendadoEm: sc.agendadoEm || local.agendadoEm };
           }
           return sc;
         });
