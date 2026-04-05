@@ -130,12 +130,21 @@ export default function Index() {
   const [phaseIds, setPhaseIds] = useState<Record<string, string>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const seenCards = useRef(new Set<string>());
-  const slackSent = useRef(new Set<string>()); // track slack notifications sent
+  const slackSent = useRef(new Set<string>());
+  const [darkMode, setDarkMode] = useState(() => {
+    const saved = localStorage.getItem("cat_dark");
+    return saved === "true";
+  });
 
   const [busca, setBusca] = useState("");
   const [fClas, setFClas] = useState("");
   const [fDem, setFDem] = useState("");
   const [fAnalista, setFAnalista] = useState(() => localStorage.getItem("cat_fAnalista") || "BRUNO");
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    localStorage.setItem("cat_dark", String(darkMode));
+  }, [darkMode]);
 
   const [alerta, setAlerta] = useState<{ tipo: string; titulo: string; cli: string; msg: string } | null>(null);
   const [modEdit, setModEdit] = useState<Atendimento | null>(null);
