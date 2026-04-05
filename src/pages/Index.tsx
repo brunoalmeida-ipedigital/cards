@@ -373,7 +373,7 @@ export default function Index() {
     if (!novo.lic || !novo.cli) { toast("⚠ Preencha Licença e Cliente"); return; }
     const id = Date.now().toString();
     setData(p => {
-      const n: Atendimento[] = [{ id, ...novo, etapa: ETAPAS[0], tentativas: [false, false, false], abertoEm: Date.now(), encerrado: false, encerradoEm: null, horaContato: novo.horaContato, analista: fAnalista || "", comentario: "", a20: false, a10: false, a4h: false, aAgd: false, a05: false }, ...p];
+      const n: Atendimento[] = [{ id, ...novo, etapa: ETAPAS[0], tentativas: [false, false, false, false, false, false, false, false], abertoEm: Date.now(), encerrado: false, encerradoEm: null, horaContato: novo.horaContato, analista: fAnalista || "", comentario: "", a20: false, a10: false, a4h: false, aAgd: false, a05: false, agendadoEm: "" }, ...p];
       localStorage.setItem("cat_v4", JSON.stringify(n));
       return n;
     });
