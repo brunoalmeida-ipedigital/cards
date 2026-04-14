@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Copy, Check, ExternalLink } from "lucide-react";
+import { calcBusinessElapsed } from "@/lib/businessHours";
+import { shouldBlink, getAttemptMessage, getCheckingMessage } from "@/lib/contactAttempts";
 
 // ── Config ──
 const ETAPAS = [
@@ -76,6 +78,7 @@ export interface Atendimento {
   aAgd: boolean;
   a05: boolean;
   agendadoEm?: string;
+  tentativasDatas?: Record<string, string>;
   _original?: unknown;
 }
 
@@ -88,7 +91,9 @@ interface Props {
   onEdit: (item: Atendimento) => void;
   onCopyMsg: (item: Atendimento) => void;
   onToggleTent: (id: string, i: number) => void;
+  onSendPipefyComment?: (cardId: string, message: string) => void;
   fAnalista: string;
+  subcategorias?: string[];
 }
 
 const parseDate = (val: string | null | undefined) => {
@@ -105,20 +110,49 @@ const parseDate = (val: string | null | undefined) => {
   return null;
 };
 
-export default function AttendanceCard({ item: a, index, now, onUpdateCard, onComment, onEdit, onCopyMsg, onToggleTent, fAnalista }: Props) {
+// Copy to clipboard helper
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  if (!text || text === "—") return null;
+  return (
+    <button
+      onClick={handleCopy}
+      className="ml-1 inline-flex items-center text-muted-foreground hover:text-primary transition-colors"
+      title={`Copiar ${label}`}
+    >
+      {copied ? <Check className="w-3 h-3 text-vintage-green" /> : <Copy className="w-3 h-3" />}
+    </button>
+  );
+}
+
+export default function AttendanceCard({
+  item: a, index, now, onUpdateCard, onComment, onEdit, onCopyMsg, onToggleTent,
+  onSendPipefyComment, fAnalista, subcategorias
+}: Props) {
   const [expanded, setExpanded] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const [contentHeight, setContentHeight] = useState(0);
+  const [tentPopup, setTentPopup] = useState<number | null>(null);
 
   useEffect(() => {
     if (contentRef.current) {
       setContentHeight(contentRef.current.scrollHeight);
     }
-  }, [expanded, a]);
+  }, [expanded, a, tentPopup]);
 
   const nowTs = now.getTime();
   const ab = a.abertoEm || nowTs;
-  const el = a.encerrado ? (a.encerradoEm || nowTs) - ab : nowTs - ab;
+
+  // Use business hours for elapsed time
+  const el = a.encerrado
+    ? calcBusinessElapsed(ab, a.encerradoEm || nowTs)
+    : calcBusinessElapsed(ab, nowTs);
   const rest = LIM - el;
   const pct = Math.min(100, Math.round((el / LIM) * 100));
   const cor = rest <= AV10 ? "hsl(var(--red))" : rest <= AV20 ? "hsl(var(--yellow))" : "hsl(var(--green))";
@@ -127,15 +161,38 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
   const timeClass = a.encerrado ? "text-muted-foreground" : isVencido ? "text-destructive" : rest <= AV10 ? "text-destructive" : rest <= AV20 ? "text-vintage-yellow" : "text-vintage-green";
 
   const isZebra = index % 2 === 1;
-  const ela = nowTs - (a.abertoEm || 0);
 
   // Ensure 8 tentativas
   const tentativas = [...(a.tentativas || [])];
   while (tentativas.length < 8) tentativas.push(false);
 
+  const tentativasDatas = a.tentativasDatas || {};
+
   // Agendado info
   const isAgendado = (a.etapa || "").toLowerCase().includes("agendado");
   const agendadoDate = parseDate(a.agendadoEm || a.horaContato);
+
+  // Determine which classification options to show
+  const clasOptions = subcategorias && subcategorias.length > 0
+    ? subcategorias
+    : Object.keys(CCOR);
+
+  const handleAttemptAction = (attemptIndex: number, action: "send" | "check") => {
+    if (!onSendPipefyComment) return;
+    const attemptNumber = attemptIndex + 1;
+    const message = action === "send"
+      ? getAttemptMessage(attemptNumber)
+      : getCheckingMessage();
+
+    onSendPipefyComment(a.id, message);
+
+    // Mark attempt as done and record date
+    const nt = [...tentativas];
+    nt[attemptIndex] = true;
+    const newDatas = { ...tentativasDatas, [String(attemptIndex)]: new Date().toISOString() };
+    onUpdateCard(a.id, { tentativas: nt, tentativasDatas: newDatas });
+    setTentPopup(null);
+  };
 
   return (
     <div
@@ -151,6 +208,18 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
         className="flex items-center gap-2 px-3 py-1.5 select-none"
         onClick={() => setExpanded(!expanded)}
       >
+        {/* Open in Pipefy */}
+        <button
+          className="flex-shrink-0 w-6 h-6 rounded flex items-center justify-center text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+          title="Abrir no Pipefy"
+          onClick={(e) => {
+            e.stopPropagation();
+            window.open(`https://app.pipefy.com/open-cards/${a.id}`, "_blank");
+          }}
+        >
+          <ExternalLink className="w-3.5 h-3.5" />
+        </button>
+
         <div
           className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
             a.dem === "Alta" ? "bg-destructive" : "bg-vintage-yellow"
@@ -168,6 +237,7 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
         <div className="flex gap-0.5 flex-shrink-0">
           {tentativas.map((done, i) => {
             const isPrimary = i < 3;
+            const blinking = shouldBlink(i, tentativas, tentativasDatas, now);
             let bg = "bg-muted border-border text-muted-foreground";
             if (done) {
               bg = isPrimary
@@ -177,9 +247,11 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
             return (
               <button
                 key={i}
-                className={`w-5 h-5 rounded text-[0.55rem] font-bold border flex items-center justify-center transition-all ${bg}`}
+                className={`w-5 h-5 rounded text-[0.55rem] font-bold border flex items-center justify-center transition-all ${bg} ${
+                  blinking ? "animate-pulse ring-2 ring-primary ring-offset-1" : ""
+                }`}
                 onClick={(e) => { e.stopPropagation(); onToggleTent(a.id, i); }}
-                title={`Tentativa ${i + 1}`}
+                title={`Tentativa ${i + 1}${blinking ? " - PENDENTE" : ""}`}
               >
                 {done ? "✓" : i + 1}
               </button>
@@ -190,7 +262,7 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
         {/* Agendado badge */}
         {isAgendado && agendadoDate && (
           <span className="text-[0.6rem] font-bold px-1.5 py-0.5 rounded bg-vintage-yellow/20 text-vintage-yellow flex-shrink-0" title="Agendamento">
-            📅 {agendadoDate.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} {agendadoDate.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+            {agendadoDate.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} {agendadoDate.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
           </span>
         )}
 
@@ -228,24 +300,50 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
       >
         <div className="px-4 pb-4 pt-1 border-t border-border/50">
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm mb-3">
+            {/* Cliente with copy */}
+            <div>
+              <span className="text-[0.65rem] uppercase font-bold text-muted-foreground tracking-wider block">Cliente</span>
+              <span className="font-medium text-foreground truncate inline" title={a.cli}>
+                {a.cli || "—"}
+              </span>
+              <CopyButton text={a.cli} label="nome" />
+            </div>
+
+            {/* Analista */}
             <div>
               <span className="text-[0.65rem] uppercase font-bold text-muted-foreground tracking-wider block">Analista</span>
               <span className="font-medium text-foreground truncate block" title={a.analista}>{a.analista || "—"}</span>
             </div>
+
+            {/* Celular with copy */}
             <div>
               <span className="text-[0.65rem] uppercase font-bold text-muted-foreground tracking-wider block">Celular</span>
               <span className="font-medium text-foreground">{a.cel || "—"}</span>
+              <CopyButton text={a.cel} label="celular" />
             </div>
+
+            {/* Licenca with copy */}
             <div>
-              <span className="text-[0.65rem] uppercase font-bold text-muted-foreground tracking-wider block">Classificação</span>
+              <span className="text-[0.65rem] uppercase font-bold text-muted-foreground tracking-wider block">Licenca</span>
+              <span className="font-medium text-foreground">{a.lic || "—"}</span>
+              <CopyButton text={a.lic} label="licenca" />
+            </div>
+
+            {/* Classificacao - uses subcategorias from Pipefy */}
+            <div>
+              <span className="text-[0.65rem] uppercase font-bold text-muted-foreground tracking-wider block">Classificacao</span>
               <span className={`text-xs font-bold px-2 py-0.5 rounded inline-block mt-0.5 ${CCOR[a.clas] || "badge-nfe"}`}>{a.clas}</span>
             </div>
+
+            {/* Demanda */}
             <div>
               <span className="text-[0.65rem] uppercase font-bold text-muted-foreground tracking-wider block">Demanda</span>
               <span className={`font-semibold text-xs ${a.dem === "Alta" ? "text-destructive" : "text-vintage-yellow"}`}>
-                {a.dem === "Alta" ? "🔴 Alta" : "🟡 Média"}
+                {a.dem === "Alta" ? "Alta" : "Media"}
               </span>
             </div>
+
+            {/* Etapa */}
             <div>
               <span className="text-[0.65rem] uppercase font-bold text-muted-foreground tracking-wider block">Etapa</span>
               {a.encerrado ? (
@@ -262,6 +360,12 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
                       const nt = [...tentativas];
                       nt[0] = true;
                       changes.tentativas = nt;
+                      // Auto-fill horaContato
+                      const horaAgora = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+                      changes.horaContato = horaAgora;
+                      // Record attempt date
+                      const newDatas = { ...tentativasDatas, "0": new Date().toISOString() };
+                      changes.tentativasDatas = newDatas;
                     }
                     onUpdateCard(a.id, changes);
                   }}
@@ -271,32 +375,35 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
                 </select>
               )}
             </div>
+
             {/* Agendamento info */}
             {isAgendado && (
               <div>
                 <span className="text-[0.65rem] uppercase font-bold text-muted-foreground tracking-wider block">Agendamento</span>
                 {agendadoDate ? (
                   <span className="text-xs font-bold text-vintage-yellow">
-                    📅 {agendadoDate.toLocaleDateString("pt-BR")} às {agendadoDate.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                    {agendadoDate.toLocaleDateString("pt-BR")} as {agendadoDate.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
                   </span>
                 ) : (
                   <span className="text-xs text-muted-foreground">Sem data definida</span>
                 )}
               </div>
             )}
-            {/* Tentativas */}
-            <div className={isAgendado ? "" : "md:col-span-1"}>
+
+            {/* Tentativas with blinking + action buttons */}
+            <div className={isAgendado ? "" : "md:col-span-2"}>
               <span className="text-[0.65rem] uppercase font-bold text-muted-foreground tracking-wider block">Tentativas</span>
-              <div className="flex gap-1 mt-1 flex-wrap">
+              <div className="flex gap-1 mt-1 flex-wrap items-start">
                 {tentativas.map((done, i) => {
                   const isPrimary = i < 3;
                   const isAnSel = (a.etapa || "").toLowerCase().includes("analista selecionado");
-                  const isHoraContato = (a.etapa || "").toLowerCase().includes("hora do primeiro contato");
+                  const isHoraContato = (a.etapa || "").toLowerCase().includes("hora primeiro contato") || (a.etapa || "").toLowerCase().includes("hora do primeiro contato");
+                  const blinking = shouldBlink(i, tentativas, tentativasDatas, now);
                   let bg = "bg-muted border-border";
                   let txt = String(i + 1);
 
                   if (i === 0 && isHoraContato) {
-                    bg = ela > 8 * 3600000 ? "bg-destructive border-destructive text-destructive-foreground" : "bg-vintage-green border-vintage-green text-primary-foreground";
+                    bg = "bg-vintage-green border-vintage-green text-primary-foreground";
                     txt = "✓";
                   } else if (done) {
                     bg = isPrimary
@@ -305,24 +412,58 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
                   }
 
                   return (
-                    <button
-                      key={i}
-                      className={`w-6 h-6 rounded text-[0.65rem] font-bold border flex items-center justify-center transition-all ${bg}`}
-                      onClick={(e) => { e.stopPropagation(); if (!isAnSel && !(i === 0 && isHoraContato)) onToggleTent(a.id, i); }}
-                      style={{ cursor: isAnSel ? "not-allowed" : "pointer", opacity: isAnSel ? 0.4 : 1 }}
-                    >
-                      {done ? "✓" : txt}
-                    </button>
+                    <div key={i} className="relative">
+                      <button
+                        className={`w-6 h-6 rounded text-[0.65rem] font-bold border flex items-center justify-center transition-all ${bg} ${
+                          blinking ? "animate-pulse ring-2 ring-primary ring-offset-1" : ""
+                        }`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (blinking && i > 0 && onSendPipefyComment) {
+                            setTentPopup(tentPopup === i ? null : i);
+                          } else if (!isAnSel && !(i === 0 && isHoraContato)) {
+                            onToggleTent(a.id, i);
+                          }
+                        }}
+                        style={{ cursor: isAnSel ? "not-allowed" : "pointer", opacity: isAnSel ? 0.4 : 1 }}
+                      >
+                        {done ? "✓" : txt}
+                      </button>
+
+                      {/* Popup for blinking attempt buttons */}
+                      {tentPopup === i && (
+                        <div className="absolute top-8 left-0 z-50 bg-card border border-border rounded-lg shadow-lg p-2 min-w-[180px]" onClick={e => e.stopPropagation()}>
+                          <button
+                            className="w-full text-xs text-left px-2 py-1.5 rounded hover:bg-primary/10 text-foreground font-medium transition-colors"
+                            onClick={() => handleAttemptAction(i, "send")}
+                          >
+                            Enviar {i + 1}a tentativa
+                          </button>
+                          <button
+                            className="w-full text-xs text-left px-2 py-1.5 rounded hover:bg-accent/10 text-foreground font-medium transition-colors"
+                            onClick={() => handleAttemptAction(i, "check")}
+                          >
+                            Verificar com o cliente
+                          </button>
+                          <button
+                            className="w-full text-xs text-left px-2 py-1.5 rounded hover:bg-muted text-muted-foreground transition-colors mt-0.5"
+                            onClick={() => setTentPopup(null)}
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>
             </div>
           </div>
 
-          {/* Prazo 4h */}
+          {/* Prazo 4h (business hours) */}
           {(a.etapa || "").toLowerCase().includes("analista selecionado") && !a.encerrado && (
             <div className="mb-3">
-              <span className="text-[0.65rem] uppercase font-bold text-muted-foreground tracking-wider">Prazo 4h</span>
+              <span className="text-[0.65rem] uppercase font-bold text-muted-foreground tracking-wider">Prazo 4h (horario comercial)</span>
               <div className="flex items-center gap-2 mt-1">
                 <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
                   <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: cor }} />
@@ -334,12 +475,12 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
             </div>
           )}
 
-          {/* Ações */}
+          {/* Acoes */}
           <div className="flex items-center gap-1 pt-2 border-t border-border/30">
             <button
               className="text-sm px-2 py-1 rounded hover:bg-muted transition-colors"
               onClick={(e) => { e.stopPropagation(); onComment(a.id, a.comentario || ""); }}
-              title="Comentário"
+              title="Comentario"
             >💬</button>
             <button
               className="text-sm px-2 py-1 rounded hover:bg-muted transition-colors"
@@ -356,12 +497,12 @@ export default function AttendanceCard({ item: a, index, now, onUpdateCard, onCo
               <button
                 className="text-xs px-3 py-1 rounded bg-vintage-blue/10 text-vintage-blue font-semibold hover:bg-vintage-blue/20 transition-colors"
                 onClick={(e) => { e.stopPropagation(); onUpdateCard(a.id, { etapa: "Analista Selecionado", encerrado: false, encerradoEm: null }); }}
-              >↩ Reabrir</button>
+              >Reabrir</button>
             ) : (
               <button
                 className="text-xs px-3 py-1 rounded bg-destructive/10 text-destructive font-semibold hover:bg-destructive/20 transition-colors"
                 onClick={(e) => { e.stopPropagation(); onUpdateCard(a.id, { etapa: "Finalizado", encerrado: true, encerradoEm: Date.now() }); }}
-              >✕ Encerrar</button>
+              >Encerrar</button>
             )}
           </div>
         </div>

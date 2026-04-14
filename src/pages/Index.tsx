@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import AttendanceCard, { type Atendimento } from "@/components/AttendanceCard";
 import Dashboard from "@/components/Dashboard";
+import GmailPanel from "@/components/GmailPanel";
+import { calcBusinessElapsed, calcBusinessRemaining } from "@/lib/businessHours";
 
 // ── Config ────────────────────────────────────────────────────────
 const PIPE_ID = "823783";
@@ -59,6 +61,7 @@ const upsertAtendimento = async (a: Atendimento) => {
     comentario: a.comentario || "",
     hora_contato: a.horaContato || "",
     tentativas: a.tentativas || [false, false, false, false, false, false, false, false],
+    tentativas_datas: a.tentativasDatas || {},
     aberto_em: a.abertoEm || Date.now(),
     encerrado: a.encerrado || false,
     encerrado_em: a.encerradoEm || null,
@@ -87,6 +90,7 @@ const upsertMany = async (items: Atendimento[]) => {
     comentario: a.comentario || "",
     hora_contato: a.horaContato || "",
     tentativas: a.tentativas || [false, false, false, false, false, false, false, false],
+    tentativas_datas: a.tentativasDatas || {},
     aberto_em: a.abertoEm || Date.now(),
     encerrado: a.encerrado || false,
     encerrado_em: a.encerradoEm || null,
@@ -114,6 +118,7 @@ const dbRowToAtendimento = (r: any): Atendimento => ({
   comentario: r.comentario || "",
   horaContato: r.hora_contato || "",
   tentativas: r.tentativas || [false, false, false, false, false, false, false, false],
+  tentativasDatas: r.tentativas_datas || {},
   abertoEm: r.aberto_em || Date.now(),
   encerrado: r.encerrado || false,
   encerradoEm: r.encerrado_em || null,
@@ -131,15 +136,16 @@ const loadFromDB = async (): Promise<Atendimento[]> => {
   return (data || []).map(dbRowToAtendimento);
 };
 
-// ── Field helpers ──
+// ── Field helpers (FIXED: more strict matching) ──
 const fieldVal = (card: any, ...keys: string[]) => {
   if (!card) return "";
   const arr = card.fields || [];
   for (const key of keys) {
-    const k = key.toLowerCase().replace(/[:\s]/g, "");
+    const normalizedKey = key.toLowerCase().replace(/[\s:_-]/g, "").trim();
     for (const f of arr) {
-      const label = (f.name || "").toLowerCase().replace(/[:\s]/g, "");
-      if (label === k || label.includes(k) || k.includes(label.slice(0, Math.min(label.length, 15)))) {
+      const label = (f.name || "").toLowerCase().replace(/[\s:_-]/g, "").trim();
+      // Strict: label must equal key or one must contain the other fully
+      if (label === normalizedKey || label === normalizedKey.slice(0, label.length) && label.length >= 8) {
         let v = (f.value || "").trim();
         v = v.replace(/^\["(.+)"\]$/, "$1").replace(/^"(.+)"$/, "$1");
         if (v && v !== "[]") return v;
@@ -205,6 +211,22 @@ const PIPE_QUERY = `
     pipe(id: $id) {
       id name
       phases { id name done cards(first: 50) { edges { node { id title createdAt current_phase { name } assignees { id name } fields { name value datetime_value } } } } }
+      labels { id name }
+      start_form_fields { id label options }
+    }
+  }
+`;
+
+// Query to fetch subcategories from the pipe fields
+const SUBCATEGORIES_QUERY = `
+  query FetchPipeFields($id: ID!) {
+    pipe(id: $id) {
+      phases {
+        fields {
+          id label type options
+        }
+      }
+      start_form_fields { id label type options }
     }
   }
 `;
@@ -223,12 +245,15 @@ export default function Index() {
     return saved === "true";
   });
 
-  const [activeTab, setActiveTab] = useState<"list" | "dashboard">("list");
+  const [activeTab, setActiveTab] = useState<"list" | "dashboard" | "email">("list");
 
   const [busca, setBusca] = useState("");
   const [fClas, setFClas] = useState("");
   const [fDem, setFDem] = useState("");
   const [fAnalista, setFAnalista] = useState(() => localStorage.getItem("cat_fAnalista") || "BRUNO");
+
+  // Subcategorias from Pipefy
+  const [subcategorias, setSubcategorias] = useState<string[]>([]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
@@ -266,19 +291,102 @@ export default function Index() {
     } catch {}
   };
 
+  // ── Fetch subcategories from Pipefy ──
+  const fetchSubcategorias = useCallback(async () => {
+    try {
+      const resp = await pipefyQuery(SUBCATEGORIES_QUERY, { id: PIPE_ID });
+      const pipe = resp?.pipe;
+      if (!pipe) return;
+
+      const allOptions: string[] = [];
+      const categoryKeywords = ["subcategor", "categoria", "configura", "instala", "erro", "atualiza", "reconfigura", "duvida"];
+
+      // Search all phase fields for subcategory options
+      (pipe.phases || []).forEach((ph: any) => {
+        (ph.fields || []).forEach((f: any) => {
+          const label = (f.label || "").toLowerCase();
+          const isSubcategory = categoryKeywords.some(kw => label.includes(kw));
+          if (isSubcategory && f.options && Array.isArray(f.options)) {
+            f.options.forEach((opt: string) => {
+              if (opt && !allOptions.includes(opt)) allOptions.push(opt);
+            });
+          }
+        });
+      });
+
+      // Also check start form fields
+      (pipe.start_form_fields || []).forEach((f: any) => {
+        const label = (f.label || "").toLowerCase();
+        const isSubcategory = categoryKeywords.some(kw => label.includes(kw));
+        if (isSubcategory && f.options && Array.isArray(f.options)) {
+          f.options.forEach((opt: string) => {
+            if (opt && !allOptions.includes(opt)) allOptions.push(opt);
+          });
+        }
+      });
+
+      if (allOptions.length > 0) {
+        setSubcategorias(allOptions);
+      }
+    } catch (e) {
+      console.warn("Failed to fetch subcategories:", e);
+    }
+  }, []);
+
   // ── Load from DB on mount ──
   useEffect(() => {
     loadFromDB().then(rows => {
       if (rows.length > 0) setData(rows);
       fetchData(false);
     });
+    fetchSubcategorias();
   }, []);
+
+  // ── Send comment to Pipefy ──
+  const sendPipefyComment = useCallback(async (cardId: string, message: string) => {
+    try {
+      await pipefyQuery(`mutation { createComment(input: { card_id: ${cardId}, text: "${message.replace(/"/g, '\\"')}" }) { comment { id } } }`);
+      toast("Mensagem enviada ao Pipefy!");
+    } catch (e: any) {
+      toast(`Erro ao enviar mensagem: ${e.message}`);
+    }
+  }, []);
+
+  // ── Generate closure message with AI ──
+  const generateClosureMessage = useCallback(async (a: Atendimento) => {
+    try {
+      const { data: aiData, error: aiError } = await supabase.functions.invoke("openrouter-proxy", {
+        body: {
+          action: "summarize_closure",
+          context: {
+            cliente: a.cli,
+            classificacao: a.clas,
+            subcategoria: a.clas,
+            comentarios: a.comentario || "Sem comentarios",
+            etapas: a.etapa,
+          },
+        },
+      });
+
+      if (aiError) throw new Error(aiError.message);
+      const message = aiData?.message || "Atendimento concluido com sucesso.";
+
+      // Send to Pipefy as comment
+      await sendPipefyComment(a.id, message);
+
+      // Save to local
+      return message;
+    } catch (e: any) {
+      console.warn("AI closure failed:", e);
+      return "Atendimento finalizado com sucesso.";
+    }
+  }, [sendPipefyComment]);
 
   // ── Sync with Pipefy ──
   const fetchData = useCallback(async (silent = false) => {
     try {
       const resp = await pipefyQuery(PIPE_QUERY, { id: PIPE_ID });
-      if (!resp?.pipe) throw new Error("Resposta inválida do Pipefy");
+      if (!resp?.pipe) throw new Error("Resposta invalida do Pipefy");
       const pipe = resp.pipe;
       const flat: Atendimento[] = [];
       const pIds: Record<string, string> = {};
@@ -288,13 +396,21 @@ export default function Index() {
         pIds[ph.name] = ph.id;
         const isEncerrado = !!ph.done || Array.from(DONE_PHASES).some(d => d.toLowerCase() === (ph.name || "").toLowerCase());
         (ph.cards?.edges || []).forEach(({ node: c }: any) => {
-          const lic = fieldVal(c, "Código da Licença", "licenca") || c.title?.split(" - ")[0]?.trim() || c.id.slice(-6).toUpperCase();
-          const cli = fieldVal(c, "Nome do Cliente", "nome") || c.title?.trim() || "";
-          let clas = fieldVal(c, "CATEGORIA - CONFIGURAÇÃO", "CATEGORIA - ERRO", "CATEGORIA CHAMADO", "CATEGORIA");
+          // FIXED: Get client data directly from Pipefy fields with strict matching
+          const lic = fieldVal(c, "Codigo da Licenca", "licenca") || c.title?.split(" - ")[0]?.trim() || c.id.slice(-6).toUpperCase();
+          const cli = fieldVal(c, "Nome do Cliente", "nome do cliente") || c.title?.trim() || "";
+          const cel = fieldVal(c, "Telefone Cliente", "telefone do cliente", "telefone")?.replace("+55", "").trim() || "";
+
+          // Get subcategory from Pipefy if available
+          let clas = fieldVal(c, "SUBCATEGORIA", "SUBCATEGORIA CHAMADO");
+          if (!clas) {
+            clas = fieldVal(c, "CATEGORIA - CONFIGURACAO", "CATEGORIA - ERRO", "CATEGORIA CHAMADO", "CATEGORIA");
+          }
           const foundClas = Object.keys(CHEX).find(k => clas.toLowerCase().includes(k.toLowerCase()));
           if (foundClas) clas = foundClas;
-          else if (!clas || !Object.keys(CHEX).includes(clas)) clas = "NFe";
-          const dem = fieldVal(c, "Prioridade").toLowerCase().includes("alta") ? "Alta" : "Média";
+          else if (!clas || clas === "[]") clas = "NFe";
+
+          const dem = fieldVal(c, "Prioridade").toLowerCase().includes("alta") ? "Alta" : "Media";
           const dtVal = c.createdAt;
           const fields = c.fields || [];
           const fHora = fields.find((f: any) => f.name?.toLowerCase().includes("primeiro contato"));
@@ -303,19 +419,19 @@ export default function Index() {
 
           const agendField = fields.find((f: any) => {
             const n = (f.name || "").toLowerCase();
-            return n.includes("agendad") || n.includes("reagendad") || n.includes("data do agendamento") || n.includes("horário");
+            return n.includes("agendad") || n.includes("reagendad") || n.includes("data do agendamento") || n.includes("horario");
           });
           const agendadoEm = agendField?.datetime_value || agendField?.value || "";
 
           flat.push({
-            id: c.id, lic, cli, cel: fieldVal(c, "Telefone Cliente", "telefone")?.replace("+55", "").trim() || "",
-            clas, dem, stat: fieldVal(c, "Situação", "Status") || "Normal",
+            id: c.id, lic, cli, cel,
+            clas, dem, stat: fieldVal(c, "Situacao", "Status") || "Normal",
             etapa: c.current_phase?.name || "Caixa de entrada",
             tentativas: [false, false, false, false, false, false, false, false], abertoEm: openedAt,
             encerrado: isEncerrado, encerradoEm: isEncerrado ? Date.now() : null,
             horaContato: fHora?.value || "", analista: (getAnalista(c) || "").toUpperCase(),
             comentario: "", a20: false, a10: false, a4h: false, aAgd: false, a05: false,
-            agendadoEm, _original: c,
+            agendadoEm, tentativasDatas: {}, _original: c,
           });
         });
       });
@@ -330,7 +446,7 @@ export default function Index() {
           slackNotify({ type: "novo_atendimento", analista: c.analista, cliente: c.cli, licenca: c.lic });
           const isMe = !fAnalista || c.analista === fAnalista;
           if (isMe) {
-            setAlerta({ tipo: "aviso", titulo: "🎯 NOVO ATENDIMENTO!", cli: c.cli.toUpperCase(), msg: `LICENÇA: ${c.lic}\nNOVO CARD EM ANALISTA SELECIONADO.` });
+            setAlerta({ tipo: "aviso", titulo: "NOVO ATENDIMENTO!", cli: c.cli.toUpperCase(), msg: `LICENCA: ${c.lic}\nNOVO CARD EM ANALISTA SELECIONADO.` });
             beep(500, 1.2);
           }
         }
@@ -343,7 +459,17 @@ export default function Index() {
           if (local) {
             const nt = Array.isArray(local.tentativas) ? [...local.tentativas] : [false, false, false, false, false, false, false, false];
             while (nt.length < 8) nt.push(false);
-            return { ...sc, tentativas: nt, stat: local.stat || "Normal", comentario: local.comentario || sc.comentario, a05: local.a05, a20: local.a20, a4h: local.a4h, aAgd: local.aAgd, agendadoEm: sc.agendadoEm || local.agendadoEm };
+            // FIXED: Always use Pipefy data for cli, cel, lic (not local overrides)
+            return {
+              ...sc,
+              tentativas: nt,
+              tentativasDatas: local.tentativasDatas || {},
+              stat: local.stat || "Normal",
+              comentario: local.comentario || sc.comentario,
+              a05: local.a05, a20: local.a20, a4h: local.a4h, aAgd: local.aAgd,
+              agendadoEm: sc.agendadoEm || local.agendadoEm,
+              horaContato: local.horaContato || sc.horaContato,
+            };
           }
           return sc;
         });
@@ -352,9 +478,9 @@ export default function Index() {
         return merged;
       });
       setLastSync(new Date());
-      if (!silent) toast("✅ Pipefy sincronizado!");
+      if (!silent) toast("Pipefy sincronizado!");
     } catch (e: any) {
-      if (!silent) toast(`⚠ Erro Pipefy: ${e.message}`);
+      if (!silent) toast(`Erro Pipefy: ${e.message}`);
     }
   }, [fAnalista]);
 
@@ -363,7 +489,7 @@ export default function Index() {
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchData]);
 
-  // Alert worker + Slack SLA alerts
+  // Alert worker + Slack SLA alerts (using business hours)
   useEffect(() => {
     let alertToSet: any = null;
     setData(prev => {
@@ -372,7 +498,7 @@ export default function Index() {
       const n = [...prev];
       const nowTs = now.getTime();
       n.filter(a => a && !a.encerrado).forEach(a => {
-        const el = nowTs - (a.abertoEm || 0);
+        const el = calcBusinessElapsed(a.abertoEm || 0, nowTs);
         const rest = LIM - el;
         const isMe = !fAnalista || a.analista === fAnalista;
         const isAnSel = (a.etapa || "").toLowerCase().includes("analista selecionado");
@@ -384,7 +510,7 @@ export default function Index() {
               slackSent.current.add(key);
               slackNotify({ type: "alerta_20min", analista: a.analista, cliente: a.cli, licenca: a.lic, minutos: Math.ceil(rest / 60000) });
             }
-            if (isMe) alertToSet = { tipo: "urgente", titulo: "ATENÇÃO — PRAZO!", cli: a.cli.toUpperCase(), msg: `FALTAM ${Math.ceil(rest / 60000)} MINUTOS PARA O PRAZO DE 4H.` };
+            if (isMe) alertToSet = { tipo: "urgente", titulo: "ATENCAO — PRAZO!", cli: a.cli.toUpperCase(), msg: `FALTAM ${Math.ceil(rest / 60000)} MINUTOS PARA O PRAZO DE 4H.` };
           }
           if (rest <= AV05 && rest > 0 && !a.a05) {
             a.a05 = true; changed = true;
@@ -393,7 +519,7 @@ export default function Index() {
               slackSent.current.add(key);
               slackNotify({ type: "alerta_5min", analista: a.analista, cliente: a.cli, licenca: a.lic, minutos: Math.ceil(rest / 60000) });
             }
-            if (isMe) alertToSet = { tipo: "urgente", titulo: "PRAZO CRÍTICO!", cli: a.cli.toUpperCase(), msg: `APENAS ${Math.ceil(rest / 60000)} MINUTOS RESTANTES!` };
+            if (isMe) alertToSet = { tipo: "urgente", titulo: "PRAZO CRITICO!", cli: a.cli.toUpperCase(), msg: `APENAS ${Math.ceil(rest / 60000)} MINUTOS RESTANTES!` };
           }
           if (rest <= 0 && !a.a4h) {
             a.a4h = true; changed = true;
@@ -419,13 +545,12 @@ export default function Index() {
                 slackSent.current.add(key);
                 slackNotify({ type: "agendado_5min", analista: a.analista, cliente: a.cli, licenca: a.lic, horaAgendada: agd.toLocaleTimeString("pt-BR") });
               }
-              if (isMe) alertToSet = { tipo: "urgente", titulo: "📅 AGENDAMENTO EM 5 MIN!", cli: a.cli.toUpperCase(), msg: `Horário agendado: ${agd.toLocaleTimeString("pt-BR")}` };
+              if (isMe) alertToSet = { tipo: "urgente", titulo: "AGENDAMENTO EM 5 MIN!", cli: a.cli.toUpperCase(), msg: `Horario agendado: ${agd.toLocaleTimeString("pt-BR")}` };
             }
           }
         }
       });
       if (changed) {
-        // Persist alert state changes to DB
         const changedItems = n.filter(a => a && !a.encerrado);
         upsertMany(changedItems);
       }
@@ -463,14 +588,53 @@ export default function Index() {
 
   // ── Actions ──
   const updateCard = async (id: string, changes: Partial<Atendimento>) => {
+    // Check if finalizing + closing → generate AI message
+    const isFinalizing = (changes.etapa === "Finalizado" || changes.etapa === "Finalizado em" || changes.etapa === "Concluido")
+      && changes.encerrado === true;
+
+    if (isFinalizing) {
+      const card = data.find(c => c.id === id);
+      if (card) {
+        const closureMsg = await generateClosureMessage(card);
+        changes.comentario = closureMsg;
+      }
+    }
+
     setData(p => {
       const n = p.map(c => c.id === id ? { ...c, ...changes } : c);
       const updated = n.find(c => c.id === id);
       if (updated) upsertAtendimento(updated);
       return n;
     });
+
     if (changes.etapa && phaseIds[changes.etapa]) {
-      try { await pipefyQuery(`mutation { moveCardToPhase(input: { card_id: "${id}", destination_phase_id: "${phaseIds[changes.etapa]}" }) { card { id } } }`); } catch (e: any) { toast(`⚠ Erro: ${e.message}`); }
+      try {
+        await pipefyQuery(`mutation { moveCardToPhase(input: { card_id: "${id}", destination_phase_id: "${phaseIds[changes.etapa]}" }) { card { id } } }`);
+
+        // If moving to "Hora primeiro contato", send the contact message and update hora field in Pipefy
+        if (changes.etapa.toLowerCase().includes("hora primeiro contato")) {
+          const card = data.find(c => c.id === id);
+          if (card) {
+            const horaAgora = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+            const msg = `Primeira tentativa de contato\n\nNome do cliente: ${card.cli}\nCelular: ${card.cel}\nHora: ${horaAgora}\nAnalista: ${card.analista || fAnalista}`;
+            await sendPipefyComment(id, msg);
+
+            // Try to update the hora field in Pipefy
+            try {
+              const fields = (card._original as any)?.fields || [];
+              const horaField = fields.find((f: any) => f.name?.toLowerCase().includes("primeiro contato"));
+              if (horaField) {
+                // Update the field value
+                await pipefyQuery(`mutation { updateCardField(input: { card_id: ${id}, field_id: "${horaField.name}", new_value: "${horaAgora}" }) { card { id } } }`);
+              }
+            } catch (e) {
+              console.warn("Failed to update hora field:", e);
+            }
+          }
+        }
+      } catch (e: any) {
+        toast(`Erro: ${e.message}`);
+      }
     }
   };
 
@@ -479,38 +643,45 @@ export default function Index() {
     if (!a || a.encerrado) return;
     const nt = [...a.tentativas];
     nt[i] = !nt[i];
-    if (i === 2 && nt[2]) toast("📵 3ª tentativa! Considere encerrar.");
-    updateCard(id, { tentativas: nt });
+    const newDatas = { ...(a.tentativasDatas || {}) };
+    if (nt[i]) {
+      newDatas[String(i)] = new Date().toISOString();
+    } else {
+      delete newDatas[String(i)];
+    }
+    if (i === 2 && nt[2]) toast("3a tentativa! Considere encerrar.");
+    updateCard(id, { tentativas: nt, tentativasDatas: newDatas });
   };
 
   const addAt = async () => {
-    if (!novo.lic || !novo.cli) { toast("⚠ Preencha Licença e Cliente"); return; }
+    if (!novo.lic || !novo.cli) { toast("Preencha Licenca e Cliente"); return; }
     const id = Date.now().toString();
     const newItem: Atendimento = {
       id, ...novo, etapa: ETAPAS[0], tentativas: [false, false, false, false, false, false, false, false],
       abertoEm: Date.now(), encerrado: false, encerradoEm: null, horaContato: novo.horaContato,
-      analista: fAnalista || "", comentario: "", a20: false, a10: false, a4h: false, aAgd: false, a05: false, agendadoEm: ""
+      analista: fAnalista || "", comentario: "", a20: false, a10: false, a4h: false, aAgd: false, a05: false, agendadoEm: "",
+      tentativasDatas: {},
     };
     setData(p => [newItem, ...p]);
     await upsertAtendimento(newItem);
     setNovo({ lic: "", cli: "", cel: "", horaContato: "", clas: "NFe", dem: "Alta", stat: "Normal" });
-    toast("✅ Atendimento criado!");
+    toast("Atendimento criado!");
   };
 
   const copyContactMsg = (a: Atendimento) => {
+    // FIXED: Use data from the Pipefy card directly
     const text = `Primeira tentativa de contato\n\nNome do cliente: ${a.cli}\nCelular: ${a.cel}\nHora: ${now.toLocaleTimeString()}\nAnalista: ${a.analista || fAnalista}`;
     navigator.clipboard.writeText(text);
-    toast("📋 Mensagem copiada!");
+    toast("Mensagem copiada!");
   };
 
   const limEnc = async () => {
     const encerrados = data.filter(x => x.encerrado);
-    // Delete from DB
     for (const e of encerrados) {
       await supabase.from("atendimentos").delete().eq("pipefy_card_id", e.id);
     }
     setData(p => p.filter(x => !x.encerrado));
-    toast("🗑 Encerrados removidos");
+    toast("Encerrados removidos");
   };
 
   // ── Derived ──
@@ -555,10 +726,10 @@ export default function Index() {
       {/* Topbar */}
       <header className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-bold text-lg">🎯</div>
+          <div className="w-10 h-10 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-bold text-lg">C</div>
           <div>
             <h1 className="text-lg font-bold text-foreground tracking-tight">Central de Atendimentos</h1>
-            <p className="text-xs text-muted-foreground">Gestão de chamados em tempo real • Slack + Pipefy</p>
+            <p className="text-xs text-muted-foreground">Gestao de chamados em tempo real</p>
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -567,13 +738,13 @@ export default function Index() {
             onChange={e => { setFAnalista(e.target.value); localStorage.setItem("cat_fAnalista", e.target.value); }}
             className="text-sm bg-card border border-border rounded-lg px-3 py-1.5 text-foreground outline-none focus:border-primary"
           >
-            <option value="">👤 Todos</option>
+            <option value="">Todos</option>
             {analistasList.map(an => <option key={an} value={an}>{an}</option>)}
           </select>
           <button onClick={() => setDarkMode(!darkMode)} className="text-sm border border-border rounded-lg px-3 py-1.5 text-foreground hover:bg-muted transition-colors" title="Alternar tema">
-            {darkMode ? "☀️" : "🌙"}
+            {darkMode ? "Claro" : "Escuro"}
           </button>
-          <button onClick={() => fetchData()} className="text-sm border border-border rounded-lg px-3 py-1.5 text-foreground hover:bg-muted transition-colors">↻ Sync</button>
+          <button onClick={() => fetchData()} className="text-sm border border-border rounded-lg px-3 py-1.5 text-foreground hover:bg-muted transition-colors">Sync</button>
           <div className="font-mono text-sm font-semibold text-primary bg-card border border-border rounded-lg px-3 py-1.5 flex items-center gap-2">
             {now.toLocaleTimeString("pt-BR")}
             <div className="w-2 h-2 rounded-full bg-vintage-green animate-pulse" />
@@ -591,7 +762,7 @@ export default function Index() {
         <div className="bg-card rounded-xl p-4 border border-border">
           <div className="text-[0.65rem] uppercase font-bold text-muted-foreground">Alta Demanda</div>
           <div className="text-2xl font-extrabold text-destructive">{alta}</div>
-          <div className="text-[0.7rem] text-muted-foreground">Prioridade máxima</div>
+          <div className="text-[0.7rem] text-muted-foreground">Prioridade maxima</div>
         </div>
         <div className="bg-card rounded-xl p-4 border border-border">
           <div className="text-[0.65rem] uppercase font-bold text-muted-foreground">Agendados</div>
@@ -599,9 +770,9 @@ export default function Index() {
           <div className="text-[0.7rem] text-muted-foreground">Clientes agendados</div>
         </div>
         <div className="bg-card rounded-xl p-4 border border-border">
-          <div className="text-[0.65rem] uppercase font-bold text-accent mb-1">Próximos a Vencer ⌛</div>
+          <div className="text-[0.65rem] uppercase font-bold text-accent mb-1">Proximos a Vencer</div>
           {aVencer.slice(0, 3).map(t => {
-            const rest = LIM - (now.getTime() - (t.abertoEm || 0));
+            const rest = calcBusinessRemaining(t.abertoEm || 0, now.getTime(), LIM);
             return (
               <div key={t.id} className="flex justify-between text-xs py-0.5">
                 <span className="truncate max-w-[100px] font-medium">{t.lic} | {t.cli.slice(0, 8)}</span>
@@ -618,38 +789,47 @@ export default function Index() {
         <button
           onClick={() => setActiveTab("list")}
           className={`text-sm font-semibold px-4 py-1.5 rounded-md transition-colors ${activeTab === "list" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-        >📋 Atendimentos</button>
+        >Atendimentos</button>
         <button
           onClick={() => setActiveTab("dashboard")}
           className={`text-sm font-semibold px-4 py-1.5 rounded-md transition-colors ${activeTab === "dashboard" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-        >📊 Dashboard</button>
+        >Dashboard</button>
+        <button
+          onClick={() => setActiveTab("email")}
+          className={`text-sm font-semibold px-4 py-1.5 rounded-md transition-colors ${activeTab === "email" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+        >Email</button>
       </div>
 
       {activeTab === "dashboard" ? (
         <Dashboard data={data} now={now} />
+      ) : activeTab === "email" ? (
+        <GmailPanel />
       ) : (
       <>
       {/* Filters */}
       <div className="flex flex-wrap gap-2 mb-4 items-center">
         <input
           type="text"
-          placeholder="🔍 Buscar licença ou cliente..."
+          placeholder="Buscar licenca ou cliente..."
           value={busca}
           onChange={e => setBusca(e.target.value)}
           className="text-sm bg-card border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary min-w-[200px] flex-1 md:flex-none"
         />
         <select value={fClas} onChange={e => setFClas(e.target.value)} className="text-sm bg-card border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary">
           <option value="">Todas class.</option>
-          {Object.keys(CHEX).map(c => <option key={c}>{c}</option>)}
+          {subcategorias.length > 0
+            ? subcategorias.map(c => <option key={c} value={c}>{c}</option>)
+            : Object.keys(CHEX).map(c => <option key={c}>{c}</option>)
+          }
         </select>
         <select value={fDem} onChange={e => setFDem(e.target.value)} className="text-sm bg-card border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary">
           <option value="">Toda demanda</option>
-          <option value="Alta">🔴 Alta</option>
-          <option value="Média">🟡 Média</option>
+          <option value="Alta">Alta</option>
+          <option value="Media">Media</option>
         </select>
-        <button onClick={limEnc} className="text-sm text-destructive bg-destructive/10 border border-transparent rounded-lg px-3 py-2 font-semibold hover:bg-destructive/20 transition-colors">🗑 Limpar enc.</button>
+        <button onClick={limEnc} className="text-sm text-destructive bg-destructive/10 border border-transparent rounded-lg px-3 py-2 font-semibold hover:bg-destructive/20 transition-colors">Limpar enc.</button>
         <div className="ml-auto text-xs text-muted-foreground font-medium">
-          📋 {filtered.length} registro(s) {lastSync && `• Sync: ${lastSync.toLocaleTimeString("pt-BR")}`}
+          {filtered.length} registro(s) {lastSync && `| Sync: ${lastSync.toLocaleTimeString("pt-BR")}`}
         </div>
       </div>
 
@@ -669,7 +849,9 @@ export default function Index() {
               onEdit={item => setModEdit({ ...item })}
               onCopyMsg={copyContactMsg}
               onToggleTent={tent}
+              onSendPipefyComment={sendPipefyComment}
               fAnalista={fAnalista}
+              subcategorias={subcategorias}
             />
           ))
         )}
@@ -679,7 +861,6 @@ export default function Index() {
       {agendados.length > 0 && (
         <div className="mb-8">
           <div className="flex items-center gap-2 mb-3">
-            <span className="text-lg">📅</span>
             <h2 className="text-base font-bold text-foreground">Agendados</h2>
             <span className="text-xs bg-vintage-yellow/20 text-vintage-yellow font-bold px-2 py-0.5 rounded-full">{agendados.length}</span>
           </div>
@@ -695,7 +876,9 @@ export default function Index() {
                 onEdit={item => setModEdit({ ...item })}
                 onCopyMsg={copyContactMsg}
                 onToggleTent={tent}
+                onSendPipefyComment={sendPipefyComment}
                 fAnalista={fAnalista}
+                subcategorias={subcategorias}
               />
             ))}
           </div>
@@ -704,10 +887,10 @@ export default function Index() {
 
       {/* New attendance form */}
       <div className="bg-card border border-border rounded-xl p-5 mb-6">
-        <div className="text-sm font-bold text-accent mb-3">➕ Novo Atendimento</div>
+        <div className="text-sm font-bold text-accent mb-3">Novo Atendimento</div>
         <div className="flex flex-wrap gap-3 items-end">
           <div className="flex flex-col gap-1">
-            <label className="text-[0.65rem] uppercase font-bold text-muted-foreground">Licença</label>
+            <label className="text-[0.65rem] uppercase font-bold text-muted-foreground">Licenca</label>
             <input ref={fLicRef} type="text" placeholder="12345" value={novo.lic} onChange={e => setNovo({ ...novo, lic: e.target.value })} className="text-sm bg-muted border border-border rounded-lg px-3 py-2 w-24 text-foreground outline-none focus:border-primary" />
           </div>
           <div className="flex flex-col gap-1 flex-1 min-w-[140px]">
@@ -721,17 +904,20 @@ export default function Index() {
           <div className="flex flex-col gap-1">
             <label className="text-[0.65rem] uppercase font-bold text-muted-foreground">Class.</label>
             <select value={novo.clas} onChange={e => setNovo({ ...novo, clas: e.target.value })} className="text-sm bg-muted border border-border rounded-lg px-2 py-2 text-foreground outline-none focus:border-primary">
-              {Object.keys(CHEX).map(c => <option key={c}>{c}</option>)}
+              {subcategorias.length > 0
+                ? subcategorias.map(c => <option key={c}>{c}</option>)
+                : Object.keys(CHEX).map(c => <option key={c}>{c}</option>)
+              }
             </select>
           </div>
           <div className="flex flex-col gap-1">
             <label className="text-[0.65rem] uppercase font-bold text-muted-foreground">Demanda</label>
             <select value={novo.dem} onChange={e => setNovo({ ...novo, dem: e.target.value })} className="text-sm bg-muted border border-border rounded-lg px-2 py-2 text-foreground outline-none focus:border-primary">
-              <option value="Alta">🔴 Alta</option>
-              <option value="Média">🟡 Média</option>
+              <option value="Alta">Alta</option>
+              <option value="Media">Media</option>
             </select>
           </div>
-          <button onClick={addAt} className="bg-primary text-primary-foreground text-sm font-bold rounded-lg px-4 py-2 hover:opacity-90 transition-opacity">Adicionar ＋</button>
+          <button onClick={addAt} className="bg-primary text-primary-foreground text-sm font-bold rounded-lg px-4 py-2 hover:opacity-90 transition-opacity">Adicionar</button>
         </div>
       </div>
       </>
@@ -744,11 +930,11 @@ export default function Index() {
       {alerta && (
         <div className="modal-overlay" onClick={() => setAlerta(null)}>
           <div className="bg-card rounded-2xl p-8 max-w-md w-[90%] text-center border border-border shadow-medium animate-fade-in" onClick={e => e.stopPropagation()}>
-            <div className="text-4xl mb-3">{alerta.tipo === "urgente" ? "🚨" : "⏰"}</div>
+            <div className="text-4xl mb-3">{alerta.tipo === "urgente" ? "!" : "?"}</div>
             <div className="text-lg font-extrabold text-foreground mb-1">{alerta.titulo}</div>
-            <div className="text-sm font-semibold text-accent mb-2">👤 {alerta.cli}</div>
+            <div className="text-sm font-semibold text-accent mb-2">{alerta.cli}</div>
             <div className="text-sm text-muted-foreground mb-6 whitespace-pre-line">{alerta.msg}</div>
-            <button onClick={() => setAlerta(null)} className="bg-primary text-primary-foreground w-full py-2.5 rounded-lg font-bold text-sm hover:opacity-90 transition-opacity">Entendido ✓</button>
+            <button onClick={() => setAlerta(null)} className="bg-primary text-primary-foreground w-full py-2.5 rounded-lg font-bold text-sm hover:opacity-90 transition-opacity">Entendido</button>
           </div>
         </div>
       )}
@@ -757,7 +943,7 @@ export default function Index() {
       {coment && (
         <div className="modal-overlay" onClick={() => setComent(null)}>
           <div className="bg-card rounded-2xl p-6 max-w-md w-[90%] border border-border shadow-medium animate-fade-in" onClick={e => e.stopPropagation()}>
-            <h3 className="text-sm font-bold text-accent mb-3">💬 Comentário</h3>
+            <h3 className="text-sm font-bold text-accent mb-3">Comentario</h3>
             <textarea
               value={coment.text}
               onChange={e => setComent({ ...coment, text: e.target.value })}
@@ -766,7 +952,7 @@ export default function Index() {
             />
             <div className="flex gap-2 justify-end mt-3">
               <button onClick={() => setComent(null)} className="text-sm px-4 py-2 rounded-lg border border-border text-foreground hover:bg-muted transition-colors">Cancelar</button>
-              <button onClick={() => { updateCard(coment.id, { comentario: coment.text }); setComent(null); toast("✅ Comentário salvo!"); }} className="text-sm px-4 py-2 rounded-lg bg-primary text-primary-foreground font-bold hover:opacity-90 transition-opacity">Salvar</button>
+              <button onClick={() => { updateCard(coment.id, { comentario: coment.text }); setComent(null); toast("Comentario salvo!"); }} className="text-sm px-4 py-2 rounded-lg bg-primary text-primary-foreground font-bold hover:opacity-90 transition-opacity">Salvar</button>
             </div>
           </div>
         </div>
@@ -776,10 +962,10 @@ export default function Index() {
       {modEdit && (
         <div className="modal-overlay" onClick={() => setModEdit(null)}>
           <div className="bg-card rounded-2xl p-6 max-w-lg w-[90%] border border-border shadow-medium animate-fade-in" onClick={e => e.stopPropagation()}>
-            <h3 className="text-sm font-bold text-accent mb-4">✏️ Editar Atendimento</h3>
+            <h3 className="text-sm font-bold text-accent mb-4">Editar Atendimento</h3>
             <div className="grid grid-cols-2 gap-3 mb-4">
               <div className="flex flex-col gap-1">
-                <label className="text-[0.65rem] uppercase font-bold text-muted-foreground">Licença</label>
+                <label className="text-[0.65rem] uppercase font-bold text-muted-foreground">Licenca</label>
                 <input value={modEdit.lic} onChange={e => setModEdit({ ...modEdit, lic: e.target.value })} className="text-sm bg-muted border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary" />
               </div>
               <div className="flex flex-col gap-1">
@@ -791,16 +977,19 @@ export default function Index() {
                 <input value={modEdit.cel} onChange={e => setModEdit({ ...modEdit, cel: e.target.value })} className="text-sm bg-muted border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary" />
               </div>
               <div className="flex flex-col gap-1">
-                <label className="text-[0.65rem] uppercase font-bold text-muted-foreground">Classificação</label>
+                <label className="text-[0.65rem] uppercase font-bold text-muted-foreground">Classificacao</label>
                 <select value={modEdit.clas} onChange={e => setModEdit({ ...modEdit, clas: e.target.value })} className="text-sm bg-muted border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary">
-                  {Object.keys(CHEX).map(c => <option key={c}>{c}</option>)}
+                  {subcategorias.length > 0
+                    ? subcategorias.map(c => <option key={c}>{c}</option>)
+                    : Object.keys(CHEX).map(c => <option key={c}>{c}</option>)
+                  }
                 </select>
               </div>
               <div className="flex flex-col gap-1">
                 <label className="text-[0.65rem] uppercase font-bold text-muted-foreground">Demanda</label>
                 <select value={modEdit.dem} onChange={e => setModEdit({ ...modEdit, dem: e.target.value })} className="text-sm bg-muted border border-border rounded-lg px-3 py-2 text-foreground outline-none focus:border-primary">
                   <option value="Alta">Alta</option>
-                  <option value="Média">Média</option>
+                  <option value="Media">Media</option>
                 </select>
               </div>
               <div className="flex flex-col gap-1">
@@ -810,7 +999,7 @@ export default function Index() {
             </div>
             <div className="flex gap-2 justify-end border-t border-border pt-3">
               <button onClick={() => setModEdit(null)} className="text-sm px-4 py-2 rounded-lg border border-border text-foreground hover:bg-muted transition-colors">Cancelar</button>
-              <button onClick={() => { updateCard(modEdit.id, { ...modEdit }); setModEdit(null); toast("✅ Atualizado!"); }} className="text-sm px-4 py-2 rounded-lg bg-primary text-primary-foreground font-bold hover:opacity-90 transition-opacity">Salvar</button>
+              <button onClick={() => { updateCard(modEdit.id, { ...modEdit }); setModEdit(null); toast("Atualizado!"); }} className="text-sm px-4 py-2 rounded-lg bg-primary text-primary-foreground font-bold hover:opacity-90 transition-opacity">Salvar</button>
             </div>
           </div>
         </div>

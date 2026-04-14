@@ -39,6 +39,7 @@ export type Database = {
           pipefy_card_id: string | null
           stat: string | null
           tentativas: boolean[] | null
+          tentativas_datas: Record<string, string> | null
           updated_at: string
         }
         Insert: {
@@ -65,6 +66,7 @@ export type Database = {
           pipefy_card_id?: string | null
           stat?: string | null
           tentativas?: boolean[] | null
+          tentativas_datas?: Record<string, string> | null
           updated_at?: string
         }
         Update: {
@@ -91,6 +93,52 @@ export type Database = {
           pipefy_card_id?: string | null
           stat?: string | null
           tentativas?: boolean[] | null
+          tentativas_datas?: Record<string, string> | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      gmail_emails: {
+        Row: {
+          id: string
+          thread_id: string | null
+          subject: string | null
+          sender: string | null
+          company: string | null
+          is_new: boolean | null
+          summary: string | null
+          interactions: number | null
+          last_message_at: string | null
+          raw_data: Record<string, unknown> | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          thread_id?: string | null
+          subject?: string | null
+          sender?: string | null
+          company?: string | null
+          is_new?: boolean | null
+          summary?: string | null
+          interactions?: number | null
+          last_message_at?: string | null
+          raw_data?: Record<string, unknown> | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          thread_id?: string | null
+          subject?: string | null
+          sender?: string | null
+          company?: string | null
+          is_new?: boolean | null
+          summary?: string | null
+          interactions?: number | null
+          last_message_at?: string | null
+          raw_data?: Record<string, unknown> | null
+          created_at?: string
           updated_at?: string
         }
         Relationships: []
