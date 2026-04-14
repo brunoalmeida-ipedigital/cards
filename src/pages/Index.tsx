@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import AttendanceCard, { type Atendimento } from "@/components/AttendanceCard";
+import AttendanceCardGrid from "@/components/AttendanceCardGrid";
 import Dashboard from "@/components/Dashboard";
+import EmailTriagemTab from "@/components/EmailTriagemTab";
 import GmailPanel from "@/components/GmailPanel";
 import { calcBusinessElapsed, calcBusinessRemaining } from "@/lib/businessHours";
 
@@ -245,7 +247,7 @@ export default function Index() {
     return saved === "true";
   });
 
-  const [activeTab, setActiveTab] = useState<"list" | "dashboard" | "email">("list");
+  const [activeTab, setActiveTab] = useState<"list" | "grid" | "dashboard" | "email" | "emailAI">("list");
 
   const [busca, setBusca] = useState("");
   const [fClas, setFClas] = useState("");
@@ -785,25 +787,35 @@ export default function Index() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-4 bg-muted rounded-lg p-1 w-fit">
+      <div className="flex gap-1 mb-4 bg-muted rounded-lg p-1 w-fit flex-wrap">
         <button
           onClick={() => setActiveTab("list")}
           className={`text-sm font-semibold px-4 py-1.5 rounded-md transition-colors ${activeTab === "list" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-        >Atendimentos</button>
+        >☰ Lista</button>
+        <button
+          onClick={() => setActiveTab("grid")}
+          className={`text-sm font-semibold px-4 py-1.5 rounded-md transition-colors ${activeTab === "grid" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+        >🗂️ Cards</button>
         <button
           onClick={() => setActiveTab("dashboard")}
           className={`text-sm font-semibold px-4 py-1.5 rounded-md transition-colors ${activeTab === "dashboard" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-        >Dashboard</button>
+        >📊 Dashboard</button>
         <button
           onClick={() => setActiveTab("email")}
           className={`text-sm font-semibold px-4 py-1.5 rounded-md transition-colors ${activeTab === "email" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-        >Email</button>
+        >📧 Gmail</button>
+        <button
+          onClick={() => setActiveTab("emailAI")}
+          className={`text-sm font-semibold px-4 py-1.5 rounded-md transition-colors ${activeTab === "emailAI" ? "bg-primary text-primary-foreground shadow-sm shadow-primary/30" : "text-primary hover:bg-primary/10"}`}
+        >🤖 Triagem IA</button>
       </div>
 
       {activeTab === "dashboard" ? (
         <Dashboard data={data} now={now} />
       ) : activeTab === "email" ? (
         <GmailPanel />
+      ) : activeTab === "emailAI" ? (
+        <EmailTriagemTab />
       ) : (
       <>
       {/* Filters */}
@@ -837,6 +849,25 @@ export default function Index() {
       <div className="space-y-1 mb-8">
         {filtered.length === 0 ? (
           <div className="text-center py-12 text-muted-foreground">Nenhum atendimento encontrado.</div>
+        ) : activeTab === "grid" ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {filtered.map((a, i) => (
+              <AttendanceCardGrid
+                key={a.id}
+                item={a}
+                index={i}
+                now={now}
+                onUpdateCard={updateCard}
+                onComment={(id, text) => setComent({ id, text })}
+                onEdit={item => setModEdit({ ...item })}
+                onCopyMsg={copyContactMsg}
+                onToggleTent={tent}
+                onSendPipefyComment={sendPipefyComment}
+                fAnalista={fAnalista}
+                subcategorias={subcategorias}
+              />
+            ))}
+          </div>
         ) : (
           filtered.map((a, i) => (
             <AttendanceCard
